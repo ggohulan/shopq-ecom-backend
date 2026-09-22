@@ -1,0 +1,17 @@
+{
+  "name": "shopq-admin-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001"
+  },
+  "dependencies": {
+    "axios": "^1.8.4",
+    "mysql2": "^3.24.4",
+    "next": "^15.2.6",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1"
+  }
+}
