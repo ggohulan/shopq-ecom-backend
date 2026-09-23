@@ -14,6 +14,35 @@ const VIEW_DEDUP_MS = 30 * 60 * 1000; // one view per visitor per product per ~3
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX = 60; // per IP per minute - generous for a real visitor, cheap to hit for a script
 
+// Server-side mirror of the client-side Meta Pixel (see the frontend's
+// trackEcommerceEvent.js) - reports the same actions again from a server no
+// ad blocker or Safari tracking prevention can touch. Meta deduplicates the
+// two using event_id, so both firing for the same action is expected, not a
+// double-count. No-ops entirely if the two env vars below aren't set.
+const META_EVENT_MAP = { view: 'ViewContent', add_to_cart: 'AddToCart', checkout_start: 'InitiateCheckout', purchase: 'Purchase' };
+
+function sendMetaConversion({ eventType, productId, sessionId, priceAtEvent, ip, userAgent }) {
+  const metaEvent = META_EVENT_MAP[eventType];
+  if (!metaEvent || !process.env.META_PIXEL_ID || !process.env.META_CAPI_ACCESS_TOKEN) return;
+
+  fetch(`https://graph.facebook.com/v20.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_CAPI_ACCESS_TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      data: [
+        {
+          event_name: metaEvent,
+          event_time: Math.floor(Date.now() / 1000),
+          event_id: `${sessionId}-${productId}-${eventType}`, // dedupes against the browser pixel
+          action_source: 'website',
+          user_data: { client_ip_address: ip, client_user_agent: userAgent },
+          custom_data: { currency: 'LKR', value: priceAtEvent ?? undefined, content_ids: [productId] },
+        },
+      ],
+    }),
+  }).catch(() => {}); // same fail-silently rule as the rest of this route
+}
+
 // In-memory, per server instance - resets on cold start/redeploy. A real
 // rate limit shared across instances (Redis, Upstash) is the next step if
 // this proves not enough; this is the "basic" version the review asked for,
@@ -86,6 +115,8 @@ export async function POST(request) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [product_id, variationId, event_type, session_id, consumerId, source, quantity, priceAtEvent, orderId]
     );
+
+    sendMetaConversion({ eventType: event_type, productId: product_id, sessionId: session_id, priceAtEvent, ip, userAgent });
 
     return NextResponse.json({ ok: true });
   } catch (err) {

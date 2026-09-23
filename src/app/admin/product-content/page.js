@@ -9,7 +9,7 @@ import request from '@/utils/axiosUtils';
 // src/utils/customFunctions/useParsedProductDescription.js merges into the
 // product detail page when the CRM description doesn't provide it. See the
 // "product-content" plan doc for full background.
-const TOKEN_STORAGE_KEY = 'shopq_admin_content_token';
+const TOKEN_STORAGE_KEY = 'shopq_admin_session';
 const PER_PAGE = 12;
 
 const emptyFeatureRow = () => ({ title: '', desc: '' });
@@ -22,8 +22,10 @@ function formatPrice(n) {
 
 export default function ProductContentAdminPage() {
   const [token, setToken] = useState('');
-  const [tokenInput, setTokenInput] = useState('');
-  const [tokenError, setTokenError] = useState('');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
   const [gateReady, setGateReady] = useState(false);
 
   const [searchInput, setSearchInput] = useState('');
@@ -91,12 +93,27 @@ export default function ProductContentAdminPage() {
     };
   }, [token, search, page, selectedProduct]);
 
-  const handleUnlock = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    if (!tokenInput.trim()) return;
-    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, tokenInput.trim());
-    setToken(tokenInput.trim());
-    setTokenError('');
+    if (!identifier.trim() || !password) return;
+    setSigningIn(true);
+    setLoginError('');
+    try {
+      const res = await fetch('/api/admin-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: identifier.trim(), password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Login failed');
+      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+      setToken(data.token);
+      setPassword('');
+    } catch (err) {
+      setLoginError(err.message || 'Login failed');
+    } finally {
+      setSigningIn(false);
+    }
   };
 
   const resetForm = () => {
@@ -207,7 +224,7 @@ export default function ProductContentAdminPage() {
     } catch (err) {
       if (err?.response?.status === 401) {
         window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-        setSaveState({ status: 'error', message: 'Wrong or expired token — please sign in again.' });
+        setSaveState({ status: 'error', message: 'Session expired — please sign in again.' });
         setToken('');
       } else {
         setSaveState({ status: 'error', message: 'Failed to save. Check the console for details.' });
@@ -220,20 +237,20 @@ export default function ProductContentAdminPage() {
   if (!token) {
     return (
       <div className='pca-shell pca-center'>
-        <form className='pca-card pca-gate' onSubmit={handleUnlock}>
+        <form className='pca-card pca-gate' onSubmit={handleLogin}>
           <h1 className='pca-title'>Product Content Admin</h1>
-          <p className='pca-subtitle'>Enter the admin token to continue.</p>
-          <input
-            type='password'
-            placeholder='Admin token'
-            value={tokenInput}
-            onChange={(e) => setTokenInput(e.target.value)}
-            className='pca-input'
-            autoFocus
-          />
-          {tokenError ? <p className='pca-error'>{tokenError}</p> : null}
-          <button type='submit' className='pca-btn pca-btn-primary' style={{ width: '100%', marginTop: 12 }}>
-            Continue
+          <p className='pca-subtitle'>Sign in to continue.</p>
+          <div style={{ marginBottom: 14 }}>
+            <label className='pca-label'>Username or email</label>
+            <input type='text' autoComplete='username' value={identifier} onChange={(e) => setIdentifier(e.target.value)} className='pca-input' autoFocus />
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <label className='pca-label'>Password</label>
+            <input type='password' autoComplete='current-password' value={password} onChange={(e) => setPassword(e.target.value)} className='pca-input' />
+          </div>
+          {loginError ? <p className='pca-error'>{loginError}</p> : null}
+          <button type='submit' className='pca-btn pca-btn-primary' disabled={signingIn} style={{ width: '100%', marginTop: 12 }}>
+            {signingIn ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
         <PcaStyles />

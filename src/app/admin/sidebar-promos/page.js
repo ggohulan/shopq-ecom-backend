@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
 
-const TOKEN_KEY = 'shopq_admin_content_token';
 
 const BLANK = {
   id: null,
@@ -73,7 +72,7 @@ export default function SidebarPromosAdminPage() {
     <AdminShell
       title='Sidebar Promo Cards'
       subtitle='Where this shows up: on the homepage, in the sidebar next to the product listing (desktop screens 1200px and wider only - hidden on phones/tablets).'
-      tokenStorageKey={TOKEN_KEY}
+     
     >
       {(token) => <CardManager token={token} />}
     </AdminShell>

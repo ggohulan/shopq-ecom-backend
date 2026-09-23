@@ -27,7 +27,7 @@ export async function GET() {
 }
 
 export async function PUT(request) {
-  const auth = checkAdminToken(request, 'ADMIN_CONTENT_TOKEN');
+  const auth = checkAdminToken(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   let body;

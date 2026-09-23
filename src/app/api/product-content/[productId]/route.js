@@ -7,6 +7,7 @@
 // each field is used, and the "product-content" plan doc for full context.
 import { NextResponse } from 'next/server';
 import { getDbPool } from '@/lib/db';
+import { checkAdminToken } from '@/lib/adminAuth';
 
 const EMPTY = { features: null, highlights: null, keyFeatures: null, idealFor: null, loveIt: null, specifications: null };
 
@@ -43,15 +44,12 @@ export async function GET(request, { params }) {
   }
 }
 
-// PUT is the only write path, protected by a shared admin token (this is an
-// internal single-operator tool, not a multi-user auth system).
+// PUT is the only write path, protected by an admin login session.
 export async function PUT(request, { params }) {
   const { productId } = await params;
 
-  const token = request.headers.get('x-admin-token');
-  if (!process.env.ADMIN_CONTENT_TOKEN || token !== process.env.ADMIN_CONTENT_TOKEN) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = checkAdminToken(request);
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   let body;
   try {

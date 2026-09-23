@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
 import request from '@/utils/axiosUtils';
 
-const TOKEN_KEY = 'shopq_admin_analytics_token';
 
 function timeAgo(iso) {
   const ms = Date.now() - new Date(iso).getTime();
@@ -18,7 +17,7 @@ export default function CartAbandonmentAdminPage() {
     <AdminShell
       title='Abandoned Carts'
       subtitle="Items added to cart and not purchased or removed within the window. Guests show only an anonymous ID — there's no contact to follow up with; logged-in customers show a consumer ID to look up in the CRM."
-      tokenStorageKey={TOKEN_KEY}
+     
     >
       {(token) => <AbandonmentList token={token} />}
     </AdminShell>

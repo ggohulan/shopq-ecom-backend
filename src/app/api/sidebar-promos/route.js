@@ -61,7 +61,7 @@ function parseBody(body) {
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const wantsAll = searchParams.get('all') === '1';
-  const auth = wantsAll ? checkAdminToken(request, 'ADMIN_CONTENT_TOKEN') : { ok: false };
+  const auth = wantsAll ? checkAdminToken(request) : { ok: false };
 
   try {
     const pool = getDbPool();
@@ -78,7 +78,7 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const auth = checkAdminToken(request, 'ADMIN_CONTENT_TOKEN');
+  const auth = checkAdminToken(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   let body;

@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
 
-const TOKEN_KEY = 'shopq_admin_content_token';
 
 const BLANK = {
   id: null,
@@ -24,7 +23,7 @@ export default function PromoBannersAdminPage() {
     <AdminShell
       title='Promo Banners'
       subtitle='Where this shows up: on the homepage, between the "Categories" row and "New Arrivals" — roughly a third of the way down the page. Add, edit, reorder, or turn any of them off below.'
-      tokenStorageKey={TOKEN_KEY}
+     
     >
       {(token) => <BannerManager token={token} />}
     </AdminShell>

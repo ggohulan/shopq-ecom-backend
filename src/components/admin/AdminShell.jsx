@@ -2,33 +2,54 @@
 
 import { useEffect, useState } from 'react';
 
-// Shared shell for the internal /admin/* pages: a sessionStorage token gate
-// plus the styles, extracted from admin/product-content/page.js (the
-// original, still uses its own copy - not touched here) now that there are
-// several of these pages instead of one. `tokenStorageKey` and `title` let
-// each page keep its own identity; the token itself is passed to children
-// via the `token` render-prop so each page's own save calls can attach it
-// as the x-admin-token header.
-export default function AdminShell({ title, subtitle, tokenStorageKey, children }) {
+// Shared shell for the internal /admin/* pages: a real login (username/email
+// + password, checked against admin_users) plus the styles. One unified
+// session grants access to every admin page - the old per-page
+// `tokenStorageKey` prop is gone along with the two separate shared tokens
+// it used to key. The session JWT is passed to children via the `token`
+// render-prop so each page's own save calls can attach it as the
+// x-admin-token header, exactly as before.
+const SESSION_KEY = 'shopq_admin_session';
+
+export default function AdminShell({ title, subtitle, children }) {
   const [token, setToken] = useState('');
-  const [tokenInput, setTokenInput] = useState('');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
   const [gateReady, setGateReady] = useState(false);
 
   useEffect(() => {
-    const stored = typeof window !== 'undefined' ? window.sessionStorage.getItem(tokenStorageKey) : null;
+    const stored = typeof window !== 'undefined' ? window.sessionStorage.getItem(SESSION_KEY) : null;
     if (stored) setToken(stored);
     setGateReady(true);
-  }, [tokenStorageKey]);
+  }, []);
 
-  const handleUnlock = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    if (!tokenInput.trim()) return;
-    window.sessionStorage.setItem(tokenStorageKey, tokenInput.trim());
-    setToken(tokenInput.trim());
+    if (!identifier.trim() || !password) return;
+    setSigningIn(true);
+    setLoginError('');
+    try {
+      const res = await fetch('/api/admin-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: identifier.trim(), password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Login failed');
+      window.sessionStorage.setItem(SESSION_KEY, data.token);
+      setToken(data.token);
+      setPassword('');
+    } catch (err) {
+      setLoginError(err.message || 'Login failed');
+    } finally {
+      setSigningIn(false);
+    }
   };
 
   const signOut = () => {
-    window.sessionStorage.removeItem(tokenStorageKey);
+    window.sessionStorage.removeItem(SESSION_KEY);
     setToken('');
   };
 
@@ -37,12 +58,20 @@ export default function AdminShell({ title, subtitle, tokenStorageKey, children 
   if (!token) {
     return (
       <div className='adm-shell adm-center'>
-        <form className='adm-card adm-gate' onSubmit={handleUnlock}>
+        <form className='adm-card adm-gate' onSubmit={handleLogin}>
           <h1 className='adm-title'>{title}</h1>
-          <p className='adm-subtitle'>Enter the admin token to continue.</p>
-          <input type='password' placeholder='Admin token' value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} className='adm-input' autoFocus />
-          <button type='submit' className='adm-btn adm-btn-primary' style={{ width: '100%', marginTop: 12 }}>
-            Continue
+          <p className='adm-subtitle'>Sign in to continue.</p>
+          <div className='adm-field'>
+            <label className='adm-label'>Username or email</label>
+            <input type='text' autoComplete='username' value={identifier} onChange={(e) => setIdentifier(e.target.value)} className='adm-input' autoFocus />
+          </div>
+          <div className='adm-field' style={{ marginBottom: 8 }}>
+            <label className='adm-label'>Password</label>
+            <input type='password' autoComplete='current-password' value={password} onChange={(e) => setPassword(e.target.value)} className='adm-input' />
+          </div>
+          {loginError ? <p className='adm-error'>{loginError}</p> : null}
+          <button type='submit' className='adm-btn adm-btn-primary' disabled={signingIn} style={{ width: '100%', marginTop: 12 }}>
+            {signingIn ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
         <AdminStyles />

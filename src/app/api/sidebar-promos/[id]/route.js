@@ -31,7 +31,7 @@ function parseBody(body) {
 }
 
 export async function PUT(request, { params }) {
-  const auth = checkAdminToken(request, 'ADMIN_CONTENT_TOKEN');
+  const auth = checkAdminToken(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const { id } = await params;
@@ -70,7 +70,7 @@ export async function PUT(request, { params }) {
 }
 
 export async function DELETE(request, { params }) {
-  const auth = checkAdminToken(request, 'ADMIN_CONTENT_TOKEN');
+  const auth = checkAdminToken(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const { id } = await params;

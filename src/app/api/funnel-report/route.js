@@ -9,7 +9,7 @@ import { getDbPool } from '@/lib/db';
 import { checkAdminToken } from '@/lib/adminAuth';
 
 export async function GET(request) {
-  const auth = checkAdminToken(request, 'ANALYTICS_ADMIN_TOKEN');
+  const auth = checkAdminToken(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const { searchParams } = new URL(request.url);

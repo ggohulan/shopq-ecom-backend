@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
 import request from '@/utils/axiosUtils';
 
-const TOKEN_KEY = 'shopq_admin_analytics_token';
 const LOW_VIEW_TO_CART = 0.05; // below 5% view->cart: flag as a possible price/photo problem
 const LOW_CART_TO_BUY = 0.2; // below 20% cart->buy: flag as possible checkout friction
 
@@ -14,7 +13,7 @@ function pct(n) {
 
 export default function FunnelAdminPage() {
   return (
-    <AdminShell title='Conversion Funnel' subtitle='View → add to cart → checkout → purchase, by product. Unique visitors per stage, not raw hits.' tokenStorageKey={TOKEN_KEY}>
+    <AdminShell title='Conversion Funnel' subtitle='View → add to cart → checkout → purchase, by product. Unique visitors per stage, not raw hits.'>
       {(token) => <FunnelReport token={token} />}
     </AdminShell>
   );

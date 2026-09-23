@@ -3,14 +3,13 @@
 import { useEffect, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
 
-const TOKEN_KEY = 'shopq_admin_content_token';
 
 export default function SiteOfferAdminPage() {
   return (
     <AdminShell
       title='Site-wide Offer'
       subtitle='The "20% off your first order" offer. One value here updates the homepage hero banner, the exit pop-up, and the newsletter band all at once - they used to be three separate copies you had to change by hand. The top bar message is also updated automatically if it still uses the old code/amount.'
-      tokenStorageKey={TOKEN_KEY}
+     
     >
       {(token) => <OfferEditor token={token} />}
     </AdminShell>
