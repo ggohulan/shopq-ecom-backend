@@ -10,7 +10,13 @@ import request from '@/utils/axiosUtils';
 // product detail page when the CRM description doesn't provide it. See the
 // "product-content" plan doc for full background.
 const TOKEN_STORAGE_KEY = 'shopq_admin_session';
-const PER_PAGE = 12;
+// The CRM's /products endpoint has a pagination quirk: its `total` field
+// reflects only what's returned on the current page, not the real catalog
+// total, so a small per-page size made "Next" never appear past page 1 and
+// made the on-page item count look like the whole catalog. The real catalog
+// is small (~23 products), so fetching a page large enough to cover it in
+// one request sidesteps the CRM's broken total/page handling entirely.
+const PER_PAGE = 100;
 
 const emptyFeatureRow = () => ({ title: '', desc: '' });
 const emptySpecRow = () => ({ label: '', value: '' });
