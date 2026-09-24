@@ -12,6 +12,11 @@ function withCors(response) {
   response.headers.set('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
   response.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   response.headers.set('Access-Control-Allow-Headers', 'Content-Type,x-admin-token');
+  // navigator.sendBeacon (used by logFunnelEvent.js) sends the request with
+  // credentials by default, which makes the browser require this header on
+  // a cross-origin response - Access-Control-Allow-Origin can't be '*' when
+  // it's set, but ALLOWED_ORIGIN is already a specific origin, so this is safe.
+  response.headers.set('Access-Control-Allow-Credentials', 'true');
   return response;
 }
 
