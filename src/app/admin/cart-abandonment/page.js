@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
-import request from '@/utils/axiosUtils';
 
 
 function timeAgo(iso) {
@@ -46,11 +45,17 @@ function AbandonmentList({ token }) {
         setCarts(data.carts || []);
         const ids = [...new Set((data.carts || []).map((c) => c.productId).filter(Boolean))];
         if (ids.length) {
-          request({ url: '/product', params: { ids: ids.join(','), per_page: ids.length } })
-            .then((res) => {
-              if (cancelled) return;
+          // /api/product-index, not the CRM directly - see
+          // BUG-REPORT-crm-products-list.md: the CRM's product LIST
+          // endpoint ignores an `ids` filter entirely and always returns
+          // the same fixed 23 products, which silently left most of these
+          // names showing as "Product <id>" instead of the real name.
+          fetch(`/api/product-index?ids=${ids.join(',')}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((body) => {
+              if (cancelled || !body) return;
               const names = {};
-              (res?.data?.data || []).forEach((p) => { names[String(p.id)] = p.name; });
+              (body.data || []).forEach((p) => { names[String(p.id)] = p.name; });
               setProductNames(names);
             })
             .catch(() => {});

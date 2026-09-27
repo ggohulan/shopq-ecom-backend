@@ -5,6 +5,10 @@ out/
 # dependencies
 /node_modules
 
+# local-dev uploaded files (src/lib/uploads.js) - production sets UPLOADS_DIR
+# to a path outside this repo entirely, so this only ever matters locally
+/uploads
+
 # misc
 .DS_Store
 .env.local

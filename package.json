@@ -8,6 +8,7 @@
     "start": "next start -p 8001 -H 0.0.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "axios": "^1.8.4",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
@@ -15,5 +16,10 @@
     "next": "^15.2.6",
     "react": "^19.0.1",
     "react-dom": "^19.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3"
   }
 }

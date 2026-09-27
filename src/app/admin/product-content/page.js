@@ -2,21 +2,23 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import request from '@/utils/axiosUtils';
+import AdminShell from '@/components/admin/AdminShell';
+import { clearSessionToken } from '@/lib/adminSession';
 
-// Internal tool, not part of the public site: browse the CRM's real product
-// catalog (via the existing /api/product list proxy), pick one, and enter
-// the Highlights / Key Features / Ideal For content that
+// Internal tool, not part of the public site: browse the product catalog,
+// pick one, and enter the Highlights / Key Features / Ideal For content that
 // src/utils/customFunctions/useParsedProductDescription.js merges into the
 // product detail page when the CRM description doesn't provide it. See the
 // "product-content" plan doc for full background.
-const TOKEN_STORAGE_KEY = 'shopq_admin_session';
-// The CRM's /products endpoint has a pagination quirk: its `total` field
-// reflects only what's returned on the current page, not the real catalog
-// total, so a small per-page size made "Next" never appear past page 1 and
-// made the on-page item count look like the whole catalog. The real catalog
-// is small (~23 products), so fetching a page large enough to cover it in
-// one request sidesteps the CRM's broken total/page handling entirely.
-const PER_PAGE = 100;
+//
+// Browsing/searching reads from /api/product-index (this backend's own DB),
+// not the CRM directly - the CRM's product LIST endpoint (GET /products) is
+// broken, stuck returning a fixed 23 results regardless of per_page or
+// filters, even though the real catalog has 138+ products (see
+// BUG-REPORT-crm-products-list.md). product_index is rebuilt by a daily
+// background sync that probes the CRM's per-ID endpoint instead, which does
+// work reliably - see src/lib/productIndexSync.js.
+const PER_PAGE = 40;
 
 const emptyFeatureRow = () => ({ title: '', desc: '' });
 const emptySpecRow = () => ({ label: '', value: '' });
@@ -26,17 +28,241 @@ function formatPrice(n) {
   return Number.isFinite(num) ? `Rs. ${num.toLocaleString()}` : '—';
 }
 
-export default function ProductContentAdminPage() {
-  const [token, setToken] = useState('');
-  const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [signingIn, setSigningIn] = useState(false);
-  const [gateReady, setGateReady] = useState(false);
+// A product with no photo (or a CRM photo URL that 404s) used to fall
+// through to the browser's own broken-image glyph, which reads as "this
+// product is broken" rather than "no photo yet". This renders a plain
+// generic picture icon instead, in both cases.
+function ProductThumb({ src, alt, className }) {
+  const [failed, setFailed] = useState(false);
 
+  if (!src || failed) {
+    return (
+      <div className={`flex items-center justify-center bg-zinc-100 text-zinc-300 ${className}`}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-2/5 w-2/5">
+          <rect x="3" y="4" width="18" height="16" rx="2" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="8.5" cy="9.5" r="1.5" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M21 16l-5.5-5.5a1.5 1.5 0 00-2.12 0L4 19" />
+        </svg>
+      </div>
+    );
+  }
+
+  return <img src={src} alt={alt} loading="lazy" className={className} onError={() => setFailed(true)} />;
+}
+
+const ACCEPTED_TYPES = 'image/jpeg,image/png,image/webp,image/gif';
+
+// Product photo hosting - this backend is becoming the source of truth for
+// every product image (replacing the CRM). Deliberately its own component
+// and its own fetch, separate from the Features/Highlights form above: the
+// two save independently (images upload immediately, content saves via its
+// own Save button) and have unrelated loading/error states.
+function ProductImagesEditor({ productId, token }) {
+  const [images, setImages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [uploading, setUploading] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    setError('');
+    fetch(`/api/product-images?productId=${encodeURIComponent(productId)}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('failed'))))
+      .then((data) => setImages(data.images || []))
+      .catch(() => setError('Could not load images.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(load, [productId]);
+
+  const handleUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // allow re-selecting the same file(s) later
+    if (!files.length) return;
+
+    setUploading(true);
+    setError('');
+    // Uploaded one at a time, in order, rather than in parallel - a file
+    // named with "main" (see looksLikeMainImage server-side) becomes primary
+    // by clearing whichever image was primary before it, so if the batch
+    // contains more than one "main"-ish name, the last one processed wins.
+    // Sequential keeps that outcome predictable instead of racing.
+    try {
+      for (const file of files) {
+        const form = new FormData();
+        form.append('productId', productId);
+        form.append('file', file);
+        const res = await fetch('/api/product-images', { method: 'POST', headers: { 'x-admin-token': token }, body: form });
+        if (!res.ok) throw new Error((await res.json())?.error || `Upload failed for "${file.name}"`);
+      }
+      load();
+    } catch (err) {
+      setError(err.message || 'Upload failed');
+      load(); // some files in the batch may have already succeeded
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const setPrimary = async (id) => {
+    setError('');
+    try {
+      const res = await fetch(`/api/product-images/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+        body: JSON.stringify({ isPrimary: true }),
+      });
+      if (!res.ok) throw new Error('Update failed');
+      load();
+    } catch (err) {
+      setError(err.message || 'Update failed');
+    }
+  };
+
+  const removeImage = async (id) => {
+    if (!window.confirm('Delete this image? This cannot be undone.')) return;
+    setError('');
+    try {
+      const res = await fetch(`/api/product-images/${id}`, { method: 'DELETE', headers: { 'x-admin-token': token } });
+      if (!res.ok) throw new Error('Delete failed');
+      load();
+    } catch (err) {
+      setError(err.message || 'Delete failed');
+    }
+  };
+
+  return (
+    <div className="adm-card mb-5">
+      <h3 className="mb-1 mt-0 font-semibold text-zinc-900">Product Images</h3>
+      <p className="adm-hint">
+        The image marked "Primary" is what listings/thumbnails use. JPG, PNG, WEBP, or GIF, up to 8MB. You can select several files at once — name one
+        with "main" in it (e.g. "main.jpg") to make it primary automatically; otherwise the first image uploaded becomes primary.
+      </p>
+
+      {error ? <p className="adm-error">{error}</p> : null}
+
+      {loading ? (
+        <p className="adm-muted">Loading images…</p>
+      ) : images.length === 0 ? (
+        <p className="adm-muted mb-3">No images uploaded yet.</p>
+      ) : (
+        <div className="mb-3 grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6">
+          {images.map((img) => (
+            <div key={img.id} className="relative overflow-hidden rounded-lg border border-zinc-200">
+              <ProductThumb src={img.url} alt="" className="aspect-square w-full object-cover" />
+              {img.isPrimary ? <span className="adm-pill adm-pill-ok absolute left-1.5 top-1.5">Primary</span> : null}
+              <div className="flex divide-x divide-zinc-200 border-t border-zinc-200 text-xs">
+                {!img.isPrimary ? (
+                  <button type="button" className="flex-1 py-1.5 font-semibold text-zinc-700 hover:bg-zinc-50" onClick={() => setPrimary(img.id)}>
+                    Set primary
+                  </button>
+                ) : null}
+                <button type="button" className={`flex-1 py-1.5 font-semibold text-red-600 hover:bg-red-50 ${img.isPrimary ? 'w-full' : ''}`} onClick={() => removeImage(img.id)}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <label className="adm-btn adm-btn-ghost inline-flex cursor-pointer">
+        {uploading ? 'Uploading…' : '+ Upload images'}
+        <input type="file" accept={ACCEPTED_TYPES} multiple onChange={handleUpload} disabled={uploading} className="hidden" />
+      </label>
+    </div>
+  );
+}
+
+function timeAgo(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+// Status/manual-trigger for the background product_index sync (see
+// src/instrumentation.js, src/lib/productIndexSync.js) - browsing/searching
+// products reads from that local index, not the CRM directly, because the
+// CRM's product LIST endpoint is broken (see BUG-REPORT-crm-products-list.md).
+// This just surfaces "is it stale, and can I force a refresh" - the sync
+// itself runs automatically once a day regardless of whether anyone opens
+// this page.
+function ProductIndexSyncStatus({ token, onSynced }) {
+  const [status, setStatus] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadStatus = () =>
+    fetch('/api/product-index/sync', { headers: { 'x-admin-token': token } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data && setStatus(data))
+      .catch(() => {});
+
+  useEffect(() => {
+    loadStatus();
+    // Poll while a sync might be running (e.g. someone else started it, or
+    // the daily scheduled run kicked off) so "Sync now" re-enables and the
+    // "last synced" line updates without needing a manual page reload.
+    const id = setInterval(loadStatus, 10000);
+    return () => clearInterval(id);
+  }, [token]);
+
+  const triggerSync = async () => {
+    setStarting(true);
+    setError('');
+    try {
+      const res = await fetch('/api/product-index/sync', { method: 'POST', headers: { 'x-admin-token': token } });
+      if (!res.ok) throw new Error((await res.json())?.error || 'Could not start sync');
+      await loadStatus();
+    } catch (err) {
+      setError(err.message || 'Could not start sync');
+    } finally {
+      setStarting(false);
+      onSynced?.();
+    }
+  };
+
+  const summary = status?.lastSummary;
+  const running = !!status?.running;
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+      <span>
+        {running
+          ? 'Syncing with the CRM…'
+          : summary
+            ? `Synced ${summary.active} products (${timeAgo(summary.finishedAt)})`
+            : 'Not synced yet'}
+      </span>
+      <button type="button" className="adm-btn adm-btn-ghost adm-btn-icon" onClick={triggerSync} disabled={starting || running}>
+        {running ? 'Syncing…' : 'Sync now'}
+      </button>
+      {error ? <span className="adm-error mt-0">{error}</span> : null}
+    </div>
+  );
+}
+
+export default function ProductContentAdminPage() {
+  return (
+    <AdminShell
+      title="Products"
+      subtitle="Images, Highlights, Key Features, and Ideal For content for products the CRM doesn't already provide it for."
+    >
+      {(token) => <ProductContentEditor token={token} />}
+    </AdminShell>
+  );
+}
+
+function ProductContentEditor({ token }) {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [products, setProducts] = useState([]);
   const [total, setTotal] = useState(0);
   const [productsLoading, setProductsLoading] = useState(false);
@@ -53,14 +279,10 @@ export default function ProductContentAdminPage() {
   const [loveItText, setLoveItText] = useState('');
   const [specifications, setSpecifications] = useState([emptySpecRow()]);
   const [saveState, setSaveState] = useState({ status: 'idle', message: '' });
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState('');
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PER_PAGE)), [total]);
-
-  useEffect(() => {
-    const stored = typeof window !== 'undefined' ? window.sessionStorage.getItem(TOKEN_STORAGE_KEY) : null;
-    if (stored) setToken(stored);
-    setGateReady(true);
-  }, []);
 
   // Debounced search - waits for the user to stop typing before refetching.
   useEffect(() => {
@@ -72,21 +294,21 @@ export default function ProductContentAdminPage() {
   }, [searchInput]);
 
   useEffect(() => {
-    if (!token || selectedProduct) return;
+    if (selectedProduct) return;
     let cancelled = false;
     setProductsLoading(true);
     setProductsError('');
 
-    request({ url: '/product', params: { search, page, per_page: PER_PAGE } })
-      .then((res) => {
+    fetch(`/api/product-index?search=${encodeURIComponent(search)}&page=${page}&per_page=${PER_PAGE}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('failed'))))
+      .then((body) => {
         if (cancelled) return;
-        const body = res?.data;
         setProducts(Array.isArray(body?.data) ? body.data : []);
         setTotal(Number(body?.total) || 0);
       })
       .catch(() => {
         if (cancelled) return;
-        setProductsError('Could not load products from the CRM.');
+        setProductsError('Could not load products.');
         setProducts([]);
         setTotal(0);
       })
@@ -97,30 +319,7 @@ export default function ProductContentAdminPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, search, page, selectedProduct]);
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    if (!identifier.trim() || !password) return;
-    setSigningIn(true);
-    setLoginError('');
-    try {
-      const res = await fetch('/api/admin-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: identifier.trim(), password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Login failed');
-      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
-      setToken(data.token);
-      setPassword('');
-    } catch (err) {
-      setLoginError(err.message || 'Login failed');
-    } finally {
-      setSigningIn(false);
-    }
-  };
+  }, [search, page, selectedProduct, refreshKey]);
 
   const resetForm = () => {
     setFeaturesText('');
@@ -229,501 +428,262 @@ export default function ProductContentAdminPage() {
       );
     } catch (err) {
       if (err?.response?.status === 401) {
-        window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+        clearSessionToken();
         setSaveState({ status: 'error', message: 'Session expired — please sign in again.' });
-        setToken('');
       } else {
         setSaveState({ status: 'error', message: 'Failed to save. Check the console for details.' });
       }
     }
   };
 
-  if (!gateReady) return null;
+  // Fills the form with an AI-drafted first pass (see
+  // src/lib/productContentAi.js) - it never saves anything itself, so
+  // nothing publishes until the admin reviews/edits it and clicks Save,
+  // same as a manually-typed draft would.
+  const generateWithAi = async () => {
+    const hasDraftAlready =
+      featuresText.trim() || highlightsText.trim() || idealFor.trim() || loveItText.trim() || keyFeatures.some((r) => r.title?.trim());
+    if (hasDraftAlready && !window.confirm('This will replace the current unsaved form content with an AI draft. Continue?')) {
+      return;
+    }
 
-  if (!token) {
+    setAiGenerating(true);
+    setAiError('');
+    try {
+      const res = await fetch('/api/product-content/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+        body: JSON.stringify({ productId: selectedProduct.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Generation failed');
+
+      const { draft } = data;
+      setFeaturesText(draft.features.join('\n'));
+      setHighlightsText(draft.highlights.join('\n'));
+      setKeyFeatures(draft.keyFeatures.length ? draft.keyFeatures : [emptyFeatureRow()]);
+      setIdealFor(draft.idealFor);
+      setLoveItText(draft.loveIt.join('\n'));
+      setSpecifications(draft.specifications.length ? draft.specifications : [emptySpecRow()]);
+    } catch (err) {
+      setAiError(err.message || 'Generation failed');
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+  if (selectedProduct) {
     return (
-      <div className='pca-shell pca-center'>
-        <form className='pca-card pca-gate' onSubmit={handleLogin}>
-          <h1 className='pca-title'>Product Content Admin</h1>
-          <p className='pca-subtitle'>Sign in to continue.</p>
-          <div style={{ marginBottom: 14 }}>
-            <label className='pca-label'>Username or email</label>
-            <input type='text' autoComplete='username' value={identifier} onChange={(e) => setIdentifier(e.target.value)} className='pca-input' autoFocus />
+      <div>
+        <button type="button" className="mb-4 text-sm font-semibold text-brand-600 hover:text-brand-700" onClick={handleBackToList}>
+          ← Back to all products
+        </button>
+
+        <div className="adm-card mb-5 flex items-center gap-3.5">
+          <ProductThumb
+            src={selectedProduct.product_thumbnail?.original_url}
+            alt={selectedProduct.name}
+            className="h-14 w-14 shrink-0 rounded-lg object-cover"
+          />
+          <div>
+            <p className="text-lg font-semibold text-zinc-900">{selectedProduct.name}</p>
+            <p className="adm-muted">
+              ID {selectedProduct.id}
+              {hasExistingContent ? <span className="adm-pill adm-pill-ok ml-2">Has content</span> : null}
+            </p>
           </div>
-          <div style={{ marginBottom: 8 }}>
-            <label className='pca-label'>Password</label>
-            <input type='password' autoComplete='current-password' value={password} onChange={(e) => setPassword(e.target.value)} className='pca-input' />
-          </div>
-          {loginError ? <p className='pca-error'>{loginError}</p> : null}
-          <button type='submit' className='pca-btn pca-btn-primary' disabled={signingIn} style={{ width: '100%', marginTop: 12 }}>
-            {signingIn ? 'Signing in...' : 'Sign in'}
-          </button>
-        </form>
-        <PcaStyles />
+        </div>
+
+        <ProductImagesEditor productId={selectedProduct.id} token={token} />
+
+        {contentLoading ? (
+          <p className="adm-muted">Loading existing content…</p>
+        ) : (
+          <>
+            <div className="adm-card mb-5 flex flex-wrap items-center gap-3">
+              <button type="button" className="adm-btn adm-btn-primary" onClick={generateWithAi} disabled={aiGenerating}>
+                {aiGenerating ? 'Generating…' : '✨ Generate with AI'}
+              </button>
+              <span className="adm-muted">Drafts every field below from the product's name/CRM description — review and edit before saving.</span>
+              {aiError ? <span className="adm-error mt-0">{aiError}</span> : null}
+            </div>
+            <form onSubmit={handleSave} className="adm-card">
+            <div className="adm-field">
+              <label className="adm-label">Features (one per line)</label>
+              <p className="adm-hint">Shown right under the price on the product page.</p>
+              <textarea
+                value={featuresText}
+                onChange={(e) => setFeaturesText(e.target.value)}
+                rows={4}
+                className="adm-input"
+                placeholder={'Keeps the cylinder warm in cold, windy weather.\nBlocks wind so the flame won\'t blow out.'}
+              />
+            </div>
+
+            <div className="adm-field">
+              <label className="adm-label">Highlights (one per line)</label>
+              <p className="adm-hint">Shown further down the page, separately from Features above.</p>
+              <textarea
+                value={highlightsText}
+                onChange={(e) => setHighlightsText(e.target.value)}
+                rows={4}
+                className="adm-input"
+                placeholder={'Waterproof design\n2-year warranty'}
+              />
+            </div>
+
+            <div className="adm-field">
+              <label className="adm-label">Key Features</label>
+              {keyFeatures.map((row, index) => (
+                <div key={index} className="mb-2 flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Title"
+                    value={row.title}
+                    onChange={(e) => updateFeatureRow(index, 'title', e.target.value)}
+                    className="adm-input flex-1"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Description (optional)"
+                    value={row.desc}
+                    onChange={(e) => updateFeatureRow(index, 'desc', e.target.value)}
+                    className="adm-input flex-[2]"
+                  />
+                  <button type="button" className="adm-btn adm-btn-ghost shrink-0" onClick={() => removeFeatureRow(index)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button type="button" className="adm-btn adm-btn-ghost mt-1" onClick={addFeatureRow}>
+                + Add feature
+              </button>
+            </div>
+
+            <div className="adm-field">
+              <label className="adm-label">Ideal For</label>
+              <textarea
+                value={idealFor}
+                onChange={(e) => setIdealFor(e.target.value)}
+                rows={3}
+                className="adm-input"
+                placeholder="Great for daily commuters and travelers."
+              />
+            </div>
+
+            <div className="adm-field">
+              <label className="adm-label">Why You&apos;ll Love It (one per line)</label>
+              <p className="adm-hint">Shown as short pills, e.g. &quot;Fits both cylinder sizes&quot;.</p>
+              <textarea
+                value={loveItText}
+                onChange={(e) => setLoveItText(e.target.value)}
+                rows={3}
+                className="adm-input"
+                placeholder={'Fits both cylinder sizes\nBlocks wind, saves gas\n30-second setup'}
+              />
+            </div>
+
+            <div className="adm-field">
+              <label className="adm-label">Specifications</label>
+              {specifications.map((row, index) => (
+                <div key={index} className="mb-2 flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Label (e.g. Material)"
+                    value={row.label}
+                    onChange={(e) => updateSpecRow(index, 'label', e.target.value)}
+                    className="adm-input flex-1"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Value (e.g. Heat-resistant woven fabric)"
+                    value={row.value}
+                    onChange={(e) => updateSpecRow(index, 'value', e.target.value)}
+                    className="adm-input flex-[2]"
+                  />
+                  <button type="button" className="adm-btn adm-btn-ghost shrink-0" onClick={() => removeSpecRow(index)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button type="button" className="adm-btn adm-btn-ghost mt-1" onClick={addSpecRow}>
+                + Add specification
+              </button>
+            </div>
+
+            <div className="adm-save-row">
+              <button type="submit" className="adm-btn adm-btn-primary" disabled={saveState.status === 'saving'}>
+                {saveState.status === 'saving' ? 'Saving…' : 'Save'}
+              </button>
+              {saveState.message ? (
+                <span className={saveState.status === 'error' ? 'adm-error mt-0' : 'adm-success'}>{saveState.message}</span>
+              ) : null}
+            </div>
+          </form>
+          </>
+        )}
       </div>
     );
   }
 
   return (
-    <div className='pca-shell'>
-      <header className='pca-header'>
-        <div>
-          <h1 className='pca-title'>Product Content Admin</h1>
-          <p className='pca-subtitle'>
-            Add Highlights, Key Features, and Ideal For content for products the CRM doesn&apos;t already provide it for.
-          </p>
-        </div>
-        <button
-          type='button'
-          className='pca-btn pca-btn-ghost'
-          onClick={() => {
-            window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-            setToken('');
-          }}
-        >
-          Sign out
-        </button>
-      </header>
+    <div>
+      <ProductIndexSyncStatus token={token} onSynced={() => setRefreshKey((k) => k + 1)} />
 
-      {!selectedProduct ? (
-        <>
-          <div className='pca-search-row'>
-            <input
-              type='search'
-              placeholder='Search products by name…'
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              className='pca-input pca-search-input'
-              autoFocus
-            />
-          </div>
+      <div className="mb-5">
+        <input
+          type="search"
+          placeholder="Search products by name…"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          className="adm-input max-w-sm"
+          autoFocus
+        />
+      </div>
 
-          {productsError ? <p className='pca-error'>{productsError}</p> : null}
+      {productsError ? <p className="adm-error">{productsError}</p> : null}
 
-          {productsLoading ? (
-            <p className='pca-muted'>Loading products…</p>
-          ) : products.length === 0 ? (
-            <p className='pca-muted'>No products found{search ? ` for "${search}"` : ''}.</p>
-          ) : (
-            <div className='pca-grid'>
-              {products.map((product) => (
-                <button key={product.id} type='button' className='pca-card pca-product-card' onClick={() => handleSelectProduct(product)}>
-                  <div className='pca-product-thumb'>
-                    {product.product_thumbnail?.original_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={product.product_thumbnail.original_url} alt={product.name} loading='lazy' />
-                    ) : (
-                      <div className='pca-thumb-placeholder' />
-                    )}
-                  </div>
-                  <div className='pca-product-info'>
-                    <p className='pca-product-name'>{product.name}</p>
-                    <p className='pca-product-meta'>
-                      {formatPrice(product.selling_price ?? product.price)}
-                      <span className={`pca-badge ${product.stock_status === 'in_stock' ? 'pca-badge-ok' : 'pca-badge-out'}`}>
-                        {product.stock_status === 'in_stock' ? 'In stock' : 'Out of stock'}
-                      </span>
-                    </p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {totalPages > 1 ? (
-            <div className='pca-pagination'>
-              <button type='button' className='pca-btn pca-btn-ghost' disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                ← Previous
-              </button>
-              <span className='pca-muted'>
-                Page {page} of {totalPages}
-              </span>
-              <button type='button' className='pca-btn pca-btn-ghost' disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-                Next →
-              </button>
-            </div>
-          ) : null}
-        </>
+      {productsLoading ? (
+        <p className="adm-muted">Loading products…</p>
+      ) : products.length === 0 ? (
+        <p className="adm-muted">No products found{search ? ` for "${search}"` : ''}.</p>
       ) : (
-        <>
-          <button type='button' className='pca-back-link' onClick={handleBackToList}>
-            ← Back to all products
-          </button>
-
-          <div className='pca-card pca-selected-product'>
-            {selectedProduct.product_thumbnail?.original_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={selectedProduct.product_thumbnail.original_url} alt={selectedProduct.name} className='pca-selected-thumb' />
-            ) : null}
-            <div>
-              <p className='pca-product-name' style={{ fontSize: 18 }}>
-                {selectedProduct.name}
-              </p>
-              <p className='pca-muted'>
-                ID {selectedProduct.id}
-                {hasExistingContent ? <span className='pca-badge pca-badge-ok' style={{ marginLeft: 8 }}>Has content</span> : null}
-              </p>
-            </div>
-          </div>
-
-          {contentLoading ? (
-            <p className='pca-muted'>Loading existing content…</p>
-          ) : (
-            <form onSubmit={handleSave} className='pca-card'>
-              <div className='pca-field'>
-                <label className='pca-label'>Features (one per line)</label>
-                <p className='pca-hint'>Shown right under the price on the product page.</p>
-                <textarea
-                  value={featuresText}
-                  onChange={(e) => setFeaturesText(e.target.value)}
-                  rows={4}
-                  className='pca-input'
-                  placeholder={'Keeps the cylinder warm in cold, windy weather.\nBlocks wind so the flame won\'t blow out.'}
-                />
+        <div className="mb-5 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
+          {products.map((product) => (
+            <button
+              key={product.id}
+              type="button"
+              onClick={() => handleSelectProduct(product)}
+              className="adm-card overflow-hidden p-0 text-left transition hover:-translate-y-0.5 hover:shadow-md"
+            >
+              <ProductThumb src={product.product_thumbnail?.original_url} alt={product.name} className="aspect-square w-full object-cover" />
+              <div className="p-3">
+                <p className="mb-1 line-clamp-2 text-[13px] font-semibold text-zinc-900">{product.name}</p>
+                <p className="flex items-center gap-2 text-xs text-zinc-600">
+                  {formatPrice(product.selling_price ?? product.price)}
+                  <span className={`adm-pill ${product.stock_status === 'in_stock' ? 'adm-pill-ok' : 'adm-pill-bad'}`}>
+                    {product.stock_status === 'in_stock' ? 'In stock' : 'Out of stock'}
+                  </span>
+                </p>
               </div>
-
-              <div className='pca-field'>
-                <label className='pca-label'>Highlights (one per line)</label>
-                <p className='pca-hint'>Shown further down the page, separately from Features above.</p>
-                <textarea
-                  value={highlightsText}
-                  onChange={(e) => setHighlightsText(e.target.value)}
-                  rows={4}
-                  className='pca-input'
-                  placeholder={'Waterproof design\n2-year warranty'}
-                />
-              </div>
-
-              <div className='pca-field'>
-                <label className='pca-label'>Key Features</label>
-                {keyFeatures.map((row, index) => (
-                  <div key={index} className='pca-feature-row'>
-                    <input
-                      type='text'
-                      placeholder='Title'
-                      value={row.title}
-                      onChange={(e) => updateFeatureRow(index, 'title', e.target.value)}
-                      className='pca-input'
-                      style={{ flex: 1 }}
-                    />
-                    <input
-                      type='text'
-                      placeholder='Description (optional)'
-                      value={row.desc}
-                      onChange={(e) => updateFeatureRow(index, 'desc', e.target.value)}
-                      className='pca-input'
-                      style={{ flex: 2 }}
-                    />
-                    <button type='button' className='pca-btn pca-btn-ghost' onClick={() => removeFeatureRow(index)}>
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <button type='button' className='pca-btn pca-btn-ghost' onClick={addFeatureRow} style={{ marginTop: 4 }}>
-                  + Add feature
-                </button>
-              </div>
-
-              <div className='pca-field'>
-                <label className='pca-label'>Ideal For</label>
-                <textarea
-                  value={idealFor}
-                  onChange={(e) => setIdealFor(e.target.value)}
-                  rows={3}
-                  className='pca-input'
-                  placeholder='Great for daily commuters and travelers.'
-                />
-              </div>
-
-              <div className='pca-field'>
-                <label className='pca-label'>Why You&apos;ll Love It (one per line)</label>
-                <p className='pca-hint'>Shown as short pills, e.g. &quot;Fits both cylinder sizes&quot;.</p>
-                <textarea
-                  value={loveItText}
-                  onChange={(e) => setLoveItText(e.target.value)}
-                  rows={3}
-                  className='pca-input'
-                  placeholder={'Fits both cylinder sizes\nBlocks wind, saves gas\n30-second setup'}
-                />
-              </div>
-
-              <div className='pca-field'>
-                <label className='pca-label'>Specifications</label>
-                {specifications.map((row, index) => (
-                  <div key={index} className='pca-feature-row'>
-                    <input
-                      type='text'
-                      placeholder='Label (e.g. Material)'
-                      value={row.label}
-                      onChange={(e) => updateSpecRow(index, 'label', e.target.value)}
-                      className='pca-input'
-                      style={{ flex: 1 }}
-                    />
-                    <input
-                      type='text'
-                      placeholder='Value (e.g. Heat-resistant woven fabric)'
-                      value={row.value}
-                      onChange={(e) => updateSpecRow(index, 'value', e.target.value)}
-                      className='pca-input'
-                      style={{ flex: 2 }}
-                    />
-                    <button type='button' className='pca-btn pca-btn-ghost' onClick={() => removeSpecRow(index)}>
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <button type='button' className='pca-btn pca-btn-ghost' onClick={addSpecRow} style={{ marginTop: 4 }}>
-                  + Add specification
-                </button>
-              </div>
-
-              <div className='pca-save-row'>
-                <button type='submit' className='pca-btn pca-btn-primary' disabled={saveState.status === 'saving'}>
-                  {saveState.status === 'saving' ? 'Saving…' : 'Save'}
-                </button>
-                {saveState.message ? (
-                  <span className={saveState.status === 'error' ? 'pca-error' : 'pca-success'}>{saveState.message}</span>
-                ) : null}
-              </div>
-            </form>
-          )}
-        </>
+            </button>
+          ))}
+        </div>
       )}
-      <PcaStyles />
-    </div>
-  );
-}
 
-// Scoped styles for this internal-only page - kept separate from the site's
-// global SCSS bundle on purpose (see HANDOVER.md's CSS-purge section: this
-// page should never depend on or affect that bundle).
-function PcaStyles() {
-  return (
-    <style jsx global>{`
-      .pca-shell {
-        max-width: 1040px;
-        margin: 0 auto;
-        padding: 32px 20px 80px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        color: #1a1a1a;
-      }
-      .pca-center {
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .pca-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 16px;
-        margin-bottom: 28px;
-        flex-wrap: wrap;
-      }
-      .pca-title {
-        font-size: 22px;
-        font-weight: 700;
-        margin: 0 0 4px;
-      }
-      .pca-subtitle {
-        color: #666;
-        margin: 0;
-        max-width: 560px;
-        font-size: 14px;
-      }
-      .pca-card {
-        background: #fff;
-        border: 1px solid #e4e4e7;
-        border-radius: 12px;
-        padding: 20px;
-      }
-      .pca-gate {
-        width: 100%;
-        max-width: 360px;
-      }
-      .pca-input {
-        width: 100%;
-        padding: 10px 12px;
-        border: 1px solid #d4d4d8;
-        border-radius: 8px;
-        font-size: 14px;
-        box-sizing: border-box;
-      }
-      .pca-input:focus {
-        outline: none;
-        border-color: #dc2626;
-        box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
-      }
-      .pca-label {
-        display: block;
-        font-weight: 600;
-        font-size: 14px;
-        margin-bottom: 6px;
-      }
-      .pca-hint {
-        margin: -2px 0 8px;
-        font-size: 12px;
-        color: #71717a;
-      }
-      .pca-field {
-        margin-bottom: 20px;
-      }
-      .pca-btn {
-        border-radius: 8px;
-        padding: 9px 16px;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        border: 1px solid transparent;
-        transition: opacity 0.15s ease;
-      }
-      .pca-btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-      .pca-btn-primary {
-        background: #dc2626;
-        color: #fff;
-      }
-      .pca-btn-primary:hover:not(:disabled) {
-        opacity: 0.9;
-      }
-      .pca-btn-ghost {
-        background: #f4f4f5;
-        color: #27272a;
-        border-color: #e4e4e7;
-      }
-      .pca-btn-ghost:hover:not(:disabled) {
-        background: #e4e4e7;
-      }
-      .pca-error {
-        color: #dc2626;
-        font-size: 13px;
-        margin: 8px 0 0;
-      }
-      .pca-success {
-        color: #16a34a;
-        font-size: 13px;
-      }
-      .pca-muted {
-        color: #71717a;
-        font-size: 14px;
-      }
-      .pca-search-row {
-        margin-bottom: 20px;
-      }
-      .pca-search-input {
-        max-width: 360px;
-      }
-      .pca-back-link {
-        background: none;
-        border: none;
-        color: #dc2626;
-        font-weight: 600;
-        font-size: 14px;
-        cursor: pointer;
-        padding: 0;
-        margin-bottom: 16px;
-      }
-      .pca-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 14px;
-        margin-bottom: 20px;
-      }
-      .pca-product-card {
-        text-align: left;
-        cursor: pointer;
-        padding: 0;
-        overflow: hidden;
-        transition: box-shadow 0.15s ease, transform 0.15s ease;
-      }
-      .pca-product-card:hover {
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
-        transform: translateY(-2px);
-      }
-      .pca-product-thumb {
-        width: 100%;
-        aspect-ratio: 1 / 1;
-        background: #f4f4f5;
-        overflow: hidden;
-      }
-      .pca-product-thumb img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-      }
-      .pca-thumb-placeholder {
-        width: 100%;
-        height: 100%;
-      }
-      .pca-product-info {
-        padding: 10px 12px 12px;
-      }
-      .pca-product-name {
-        font-size: 13px;
-        font-weight: 600;
-        margin: 0 0 4px;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-      .pca-product-meta {
-        font-size: 12px;
-        color: #52525b;
-        margin: 0;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .pca-badge {
-        font-size: 10px;
-        font-weight: 700;
-        text-transform: uppercase;
-        padding: 2px 6px;
-        border-radius: 4px;
-      }
-      .pca-badge-ok {
-        background: #dcfce7;
-        color: #16a34a;
-      }
-      .pca-badge-out {
-        background: #fee2e2;
-        color: #dc2626;
-      }
-      .pca-pagination {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 16px;
-        margin-top: 12px;
-      }
-      .pca-selected-product {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin-bottom: 20px;
-      }
-      .pca-selected-thumb {
-        width: 56px;
-        height: 56px;
-        object-fit: cover;
-        border-radius: 8px;
-        flex-shrink: 0;
-      }
-      .pca-feature-row {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 8px;
-      }
-      .pca-save-row {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-      }
-    `}</style>
+      {totalPages > 1 ? (
+        <div className="flex items-center justify-center gap-4">
+          <button type="button" className="adm-btn adm-btn-ghost" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            ← Previous
+          </button>
+          <span className="adm-muted">
+            Page {page} of {totalPages}
+          </span>
+          <button type="button" className="adm-btn adm-btn-ghost" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
+            Next →
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }

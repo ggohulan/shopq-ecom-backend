@@ -91,6 +91,7 @@ openssl rand -hex 32
 ```
 
 ```bash
+mkdir -p ~/shopq-uploads/products
 cat > .env.local << 'EOF'
 DB_HOST=<your DreamHost MySQL hostname, e.g. mysql.shopq.lk>
 DB_PORT=3306
@@ -101,9 +102,19 @@ DB_SSL=false
 ADMIN_JWT_SECRET=<paste the openssl output here>
 ALLOWED_ORIGIN=https://shopq.lk
 LARAVEL_API_BASE_URL=https://shopqhub.com/api/v1
+UPLOADS_DIR=/home/<user>/shopq-uploads
 EOF
 chmod 600 .env.local
 ```
+
+**`UPLOADS_DIR` must live outside `~/shopq-admin-backend`** (this app's
+git-managed directory) - it holds every uploaded product photo
+(`src/lib/uploads.js`), and a redeploy that re-clones or `git clean`s that
+directory would otherwise silently delete them. `~/shopq-uploads`, as a
+sibling directory, survives that. There's no size limit enforced beyond the
+8MB-per-file cap in `src/lib/uploads.js` - watch disk usage as photos
+accumulate on this 1GB-RAM VPS (RAM and disk are separate, but confirm the
+plan's disk allowance if this grows into thousands of images).
 
 ## 5. Build locally, not on the server
 

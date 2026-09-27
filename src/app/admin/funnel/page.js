@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import AdminShell from '@/components/admin/AdminShell';
-import request from '@/utils/axiosUtils';
 
 const LOW_VIEW_TO_CART = 0.05; // below 5% view->cart: flag as a possible price/photo problem
 const LOW_CART_TO_BUY = 0.2; // below 20% cart->buy: flag as possible checkout friction
@@ -42,11 +41,17 @@ function FunnelReport({ token }) {
         setReport(data);
         const ids = data.products.map((p) => p.productId).filter(Boolean);
         if (ids.length) {
-          request({ url: '/product', params: { ids: ids.join(','), per_page: ids.length } })
-            .then((res) => {
-              if (cancelled) return;
+          // /api/product-index, not the CRM directly - see
+          // BUG-REPORT-crm-products-list.md: the CRM's product LIST
+          // endpoint ignores an `ids` filter entirely and always returns
+          // the same fixed 23 products, which silently left most of these
+          // names showing as "Product <id>" instead of the real name.
+          fetch(`/api/product-index?ids=${ids.join(',')}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((body) => {
+              if (cancelled || !body) return;
               const names = {};
-              (res?.data?.data || []).forEach((p) => { names[String(p.id)] = p.name; });
+              (body.data || []).forEach((p) => { names[String(p.id)] = p.name; });
               setProductNames(names);
             })
             .catch(() => {});

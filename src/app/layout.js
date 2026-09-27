@@ -1,3 +1,5 @@
+import './globals.css';
+
 export const metadata = {
   title: 'ShopQ Admin',
   robots: { index: false, follow: false },
