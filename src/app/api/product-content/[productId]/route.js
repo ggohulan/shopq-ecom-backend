@@ -11,6 +11,16 @@ import { checkAdminToken } from '@/lib/adminAuth';
 
 const EMPTY = { features: null, highlights: null, keyFeatures: null, idealFor: null, loveIt: null, specifications: null };
 
+// MySQL's native JSON column type comes back from mysql2 already parsed
+// (an array/object), while MariaDB - which stores JSON as plain text, as the
+// local XAMPP setup does - comes back as a string. Handle both, otherwise
+// JSON.parse throws on the already-parsed value and the catch below silently
+// returns EMPTY for every product.
+function parseJson(value) {
+  if (value == null) return null;
+  return typeof value === 'string' ? JSON.parse(value) : value;
+}
+
 // GET is public and unauthenticated on purpose: it's read-only, non-
 // sensitive, and called on every product detail page view. Returns a 200
 // with all-null fields when no row exists yet - "no supplemental data" is a
@@ -31,12 +41,12 @@ export async function GET(request, { params }) {
 
     const row = rows[0];
     return NextResponse.json({
-      features: row.features ? JSON.parse(row.features) : null,
-      highlights: row.highlights ? JSON.parse(row.highlights) : null,
-      keyFeatures: row.key_features ? JSON.parse(row.key_features) : null,
+      features: parseJson(row.features),
+      highlights: parseJson(row.highlights),
+      keyFeatures: parseJson(row.key_features),
       idealFor: row.ideal_for || null,
-      loveIt: row.love_it ? JSON.parse(row.love_it) : null,
-      specifications: row.specifications ? JSON.parse(row.specifications) : null,
+      loveIt: parseJson(row.love_it),
+      specifications: parseJson(row.specifications),
     });
   } catch (err) {
     console.error('Error reading product-content:', err);
