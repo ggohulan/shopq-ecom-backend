@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import request from '@/utils/axiosUtils';
 import AdminShell from '@/components/admin/AdminShell';
+import SeoMetaEditor from '@/components/admin/SeoMetaEditor';
 import { clearSessionToken } from '@/lib/adminSession';
 
 // Internal tool, not part of the public site: browse the product catalog,
@@ -620,6 +621,10 @@ function ProductContentEditor({ token }) {
               ) : null}
             </div>
           </form>
+
+          <div className="mt-5">
+            <SeoMetaEditor entityType="product" entityId={String(selectedProduct.id)} token={token} />
+          </div>
           </>
         )}
       </div>
