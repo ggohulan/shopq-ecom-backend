@@ -33,6 +33,7 @@ export async function register() {
     g.__shopqProductIndexSyncStarted = true;
 
     const { runProductIndexSync } = await import('@/lib/productIndexSync');
+    const { runCartRecoverySweep } = await import('@/lib/cartRecovery');
 
     const DAY_MS = 24 * 60 * 60 * 1000;
     const INITIAL_DELAY_MS = 60 * 1000; // let the server finish settling first
@@ -46,5 +47,22 @@ export async function register() {
 
     setTimeout(run, INITIAL_DELAY_MS);
     setInterval(run, DAY_MS);
+
+    // Every 30 minutes so step 1 (fires at 1h old) reaches shoppers within
+    // half an hour of becoming eligible, not once a day like the product
+    // sync above - cart recovery is time-sensitive in a way the product
+    // catalog mirror isn't. A no-op (skippedNotConfigured) when SMTP isn't
+    // set up yet, so this is safe to leave running before that's configured.
+    const HALF_HOUR_MS = 30 * 60 * 1000;
+    const CART_RECOVERY_INITIAL_DELAY_MS = 90 * 1000;
+
+    const runCartRecovery = () => {
+      runCartRecoverySweep().catch((err) => {
+        console.error('[cart-recovery] scheduled sweep failed', err);
+      });
+    };
+
+    setTimeout(runCartRecovery, CART_RECOVERY_INITIAL_DELAY_MS);
+    setInterval(runCartRecovery, HALF_HOUR_MS);
   }
 }

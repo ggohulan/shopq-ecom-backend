@@ -39,6 +39,12 @@ export const ADMIN_SECTIONS = [
     icon: 'M4 4h2l2.4 12.4a2 2 0 002 1.6h7.2a2 2 0 002-1.6L20 8H6',
   },
   {
+    href: '/admin/cart-recovery',
+    label: 'Cart Recovery',
+    description: 'Automated 3-step email sequence for logged-in shoppers who abandoned a cart, with send/recovery stats.',
+    icon: 'M3 8l9 6 9-6 M4 6h16v12H4z',
+  },
+  {
     href: '/admin/reviews',
     label: 'Reviews',
     description: 'Moderate customer-submitted reviews and manually import reviews collected elsewhere, both pending approval before going live.',
