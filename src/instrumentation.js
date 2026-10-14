@@ -15,6 +15,15 @@ export async function register() {
   // guard) - Next's bundler specifically pattern-matches this form to
   // exclude the imported module from the Edge bundle entirely.
   if (process.env.NEXT_RUNTIME === 'nodejs') {
+    // Kill switch: PRODUCT_INDEX_SYNC_ENABLED=false in .env.local disables
+    // the scheduler without a code deploy - added after the Oct 2026 incident,
+    // where the sync was initially suspected (it wasn't the cause) and there
+    // was no way to rule it out quickly short of editing code.
+    if (process.env.PRODUCT_INDEX_SYNC_ENABLED === 'false') {
+      console.log('[product-index-sync] disabled via PRODUCT_INDEX_SYNC_ENABLED=false');
+      return;
+    }
+
     // Next's dev server re-runs this on every hot-reload-triggered restart
     // of the server compartment - a globalThis flag (survives that, unlike
     // a module-level variable re-initialized per reload) stops a second

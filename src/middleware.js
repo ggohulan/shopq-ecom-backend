@@ -21,6 +21,20 @@ function withCors(response) {
 }
 
 export function middleware(request) {
+  // This app defines no Server Actions (no 'use server' anywhere), so any
+  // request carrying a Next-Action header is hostile by definition - during
+  // the Oct 2026 incident an automated scanner cycled crafted action IDs
+  // against this endpoint until the process locked up at 100% CPU for six
+  // days (see the error log's "Server Reference ID did not match" storm).
+  // Rejecting here keeps Next.js from ever deserialising the payload.
+  if (request.headers.has('next-action')) {
+    return new NextResponse(null, { status: 404 });
+  }
+
+  if (!request.nextUrl.pathname.startsWith('/api/')) {
+    return NextResponse.next();
+  }
+
   if (request.method === 'OPTIONS') {
     return withCors(new NextResponse(null, { status: 204 }));
   }
@@ -28,5 +42,7 @@ export function middleware(request) {
 }
 
 export const config = {
-  matcher: '/api/:path*',
+  // Everything except static assets - the Next-Action check above must see
+  // every route, not only /api/*, which is the only part that needs CORS.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };
