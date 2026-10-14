@@ -44,4 +44,10 @@ export const ADMIN_SECTIONS = [
     description: 'Moderate customer-submitted reviews and manually import reviews collected elsewhere, both pending approval before going live.',
     icon: 'M12 17.3l-5.4 3 1.4-6-4.6-4 6-.5L12 4l2.6 5.8 6 .5-4.6 4 1.4 6z',
   },
+  {
+    href: '/admin/seo',
+    label: 'SEO',
+    description: 'Meta title/description, social share image, canonical URL and noindex for categories and static pages. Per-product SEO lives on the Products page.',
+    icon: 'M11 4a7 7 0 104.9 12 M21 21l-4.3-4.3',
+  },
 ];
