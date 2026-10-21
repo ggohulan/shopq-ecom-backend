@@ -116,6 +116,21 @@ sibling directory, survives that. There's no size limit enforced beyond the
 accumulate on this 1GB-RAM VPS (RAM and disk are separate, but confirm the
 plan's disk allowance if this grows into thousands of images).
 
+**Bulk product images (/admin/bulk-product-images)** uses Gemini to match
+photos to products. Add these two lines to `.env.local` (same API key the
+CRM uses is fine) and restart PM2 with `--update-env`:
+
+```
+GEMINI_API_KEY=<key>
+GEMINI_VISION_MODEL=gemini-3.1-flash-lite
+```
+
+Without the key the page still works: it matches by folder and file names
+only and tells the admin so. Only small previews and file names are sent to
+Gemini. If the server cannot reach Google over IPv6, start Node with
+`NODE_OPTIONS=--dns-result-order=ipv4first` (seen on a Windows dev machine;
+a Linux VPS normally does not need it). Run the matcher tests with `npm test`.
+
 ## 5. Build locally, not on the server
 
 On the machine you develop on (not the VPS):

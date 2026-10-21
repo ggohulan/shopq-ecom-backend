@@ -9,6 +9,12 @@ export const ADMIN_SECTIONS = [
     icon: 'M4 5h16M4 12h16M4 19h10',
   },
   {
+    href: '/admin/bulk-product-images',
+    label: 'Bulk Product Images',
+    description: 'Upload a folder of product photos: the AI matches each product folder to its product and picks the main photo, you review, then save.',
+    icon: 'M4 16l4-4 4 4 4-6 4 6 M4 5h16v14H4z',
+  },
+  {
     href: '/admin/promo-banners',
     label: 'Promo Banners',
     description: 'The homepage banner row between Categories and New Arrivals.',
