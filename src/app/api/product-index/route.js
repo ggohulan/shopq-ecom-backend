@@ -57,6 +57,11 @@ export async function GET(request) {
       where.push('name LIKE ?');
       params.push(`%${search}%`);
     }
+    // ?no_photo=1: only products with no image uploaded in this backend yet
+    // (nothing in product_images), for finding what still needs photos.
+    if (searchParams.get('no_photo') === '1') {
+      where.push('NOT EXISTS (SELECT 1 FROM product_images pi WHERE pi.product_id = product_index.product_id)');
+    }
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
     const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM product_index ${whereSql}`, params);

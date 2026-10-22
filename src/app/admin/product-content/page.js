@@ -262,6 +262,7 @@ export default function ProductContentAdminPage() {
 function ProductContentEditor({ token }) {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  const [noPhotoOnly, setNoPhotoOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
   const [products, setProducts] = useState([]);
@@ -300,7 +301,7 @@ function ProductContentEditor({ token }) {
     setProductsLoading(true);
     setProductsError('');
 
-    fetch(`/api/product-index?search=${encodeURIComponent(search)}&page=${page}&per_page=${PER_PAGE}`)
+    fetch(`/api/product-index?search=${encodeURIComponent(search)}&page=${page}&per_page=${PER_PAGE}${noPhotoOnly ? '&no_photo=1' : ''}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('failed'))))
       .then((body) => {
         if (cancelled) return;
@@ -320,7 +321,7 @@ function ProductContentEditor({ token }) {
     return () => {
       cancelled = true;
     };
-  }, [search, page, selectedProduct, refreshKey]);
+  }, [search, page, noPhotoOnly, selectedProduct, refreshKey]);
 
   const resetForm = () => {
     setFeaturesText('');
@@ -635,7 +636,7 @@ function ProductContentEditor({ token }) {
     <div>
       <ProductIndexSyncStatus token={token} onSynced={() => setRefreshKey((k) => k + 1)} />
 
-      <div className="mb-5">
+      <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2">
         <input
           type="search"
           placeholder="Search products by name…"
@@ -644,6 +645,19 @@ function ProductContentEditor({ token }) {
           className="adm-input max-w-sm"
           autoFocus
         />
+        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-zinc-700">
+          <input
+            type="checkbox"
+            checked={noPhotoOnly}
+            onChange={(e) => {
+              setNoPhotoOnly(e.target.checked);
+              setPage(1);
+            }}
+            className="h-4 w-4 accent-red-600"
+          />
+          Only products with no photos
+          {noPhotoOnly && !productsLoading ? <span className="adm-muted">({total})</span> : null}
+        </label>
       </div>
 
       {productsError ? <p className="adm-error">{productsError}</p> : null}
@@ -651,7 +665,10 @@ function ProductContentEditor({ token }) {
       {productsLoading ? (
         <p className="adm-muted">Loading products…</p>
       ) : products.length === 0 ? (
-        <p className="adm-muted">No products found{search ? ` for "${search}"` : ''}.</p>
+        <p className="adm-muted">
+          {noPhotoOnly ? 'No products without photos' : 'No products found'}
+          {search ? ` for "${search}"` : ''}.
+        </p>
       ) : (
         <div className="mb-5 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
           {products.map((product) => (
