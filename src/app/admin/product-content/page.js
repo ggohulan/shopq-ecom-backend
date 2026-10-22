@@ -263,6 +263,10 @@ function ProductContentEditor({ token }) {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [noPhotoOnly, setNoPhotoOnly] = useState(false);
+  const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [visibilityBusy, setVisibilityBusy] = useState(false);
+  const [visibilityError, setVisibilityError] = useState('');
   const [page, setPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
   const [products, setProducts] = useState([]);
@@ -301,7 +305,7 @@ function ProductContentEditor({ token }) {
     setProductsLoading(true);
     setProductsError('');
 
-    fetch(`/api/product-index?search=${encodeURIComponent(search)}&page=${page}&per_page=${PER_PAGE}${noPhotoOnly ? '&no_photo=1' : ''}`)
+    fetch(`/api/product-index?search=${encodeURIComponent(search)}&page=${page}&per_page=${PER_PAGE}${noPhotoOnly ? '&no_photo=1' : ''}${hiddenOnly ? '&hidden=1' : ''}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('failed'))))
       .then((body) => {
         if (cancelled) return;
@@ -321,7 +325,46 @@ function ProductContentEditor({ token }) {
     return () => {
       cancelled = true;
     };
-  }, [search, page, noPhotoOnly, selectedProduct, refreshKey]);
+  }, [search, page, noPhotoOnly, hiddenOnly, selectedProduct, refreshKey]);
+
+  const toggleSelected = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const allOnPageSelected = products.length > 0 && products.every((p) => selected.has(p.id));
+  const toggleAllOnPage = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      products.forEach((p) => (allOnPageSelected ? next.delete(p.id) : next.add(p.id)));
+      return next;
+    });
+
+  // Hides (hidden = true) or shows (hidden = false) every selected product on
+  // the storefront; the storefront reads the list from GET /api/hidden-products.
+  const setVisibility = async (hidden) => {
+    if (!selected.size || visibilityBusy) return;
+    setVisibilityBusy(true);
+    setVisibilityError('');
+    try {
+      const res = await fetch('/api/hidden-products', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': token },
+        body: JSON.stringify({ productIds: [...selected], hidden }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || 'Could not update the products.');
+      setSelected(new Set());
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      setVisibilityError(err.message || 'Could not update the products.');
+    } finally {
+      setVisibilityBusy(false);
+    }
+  };
 
   const resetForm = () => {
     setFeaturesText('');
@@ -658,7 +701,42 @@ function ProductContentEditor({ token }) {
           Only products with no photos
           {noPhotoOnly && !productsLoading ? <span className="adm-muted">({total})</span> : null}
         </label>
+        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-zinc-700">
+          <input
+            type="checkbox"
+            checked={hiddenOnly}
+            onChange={(e) => {
+              setHiddenOnly(e.target.checked);
+              setPage(1);
+            }}
+            className="h-4 w-4 accent-red-600"
+          />
+          Only hidden products
+          {hiddenOnly && !productsLoading ? <span className="adm-muted">({total})</span> : null}
+        </label>
+        {products.length > 0 ? (
+          <label className="flex cursor-pointer items-center gap-2 text-[13px] text-zinc-700">
+            <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} className="h-4 w-4 accent-red-600" />
+            Select all on this page
+          </label>
+        ) : null}
       </div>
+
+      {selected.size > 0 ? (
+        <div className="adm-card mb-4 flex flex-wrap items-center gap-3 p-3">
+          <span className="text-[13px] font-semibold text-zinc-900">{selected.size} selected</span>
+          <button type="button" className="adm-btn adm-btn-primary" disabled={visibilityBusy} onClick={() => setVisibility(true)}>
+            {visibilityBusy ? 'Saving…' : 'Hide from website'}
+          </button>
+          <button type="button" className="adm-btn adm-btn-ghost" disabled={visibilityBusy} onClick={() => setVisibility(false)}>
+            Show on website
+          </button>
+          <button type="button" className="adm-btn adm-btn-ghost" disabled={visibilityBusy} onClick={() => setSelected(new Set())}>
+            Clear selection
+          </button>
+        </div>
+      ) : null}
+      {visibilityError ? <p className="adm-error mb-3">{visibilityError}</p> : null}
 
       {productsError ? <p className="adm-error">{productsError}</p> : null}
 
@@ -666,29 +744,42 @@ function ProductContentEditor({ token }) {
         <p className="adm-muted">Loading products…</p>
       ) : products.length === 0 ? (
         <p className="adm-muted">
-          {noPhotoOnly ? 'No products without photos' : 'No products found'}
+          {hiddenOnly ? 'No hidden products' : noPhotoOnly ? 'No products without photos' : 'No products found'}
           {search ? ` for "${search}"` : ''}.
         </p>
       ) : (
         <div className="mb-5 grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4">
           {products.map((product) => (
-            <button
-              key={product.id}
-              type="button"
-              onClick={() => handleSelectProduct(product)}
-              className="adm-card overflow-hidden p-0 text-left transition hover:-translate-y-0.5 hover:shadow-md"
-            >
-              <ProductThumb src={product.product_thumbnail?.original_url} alt={product.name} className="aspect-square w-full object-cover" />
-              <div className="p-3">
-                <p className="mb-1 line-clamp-2 text-[13px] font-semibold text-zinc-900">{product.name}</p>
-                <p className="flex items-center gap-2 text-xs text-zinc-600">
-                  {formatPrice(product.selling_price ?? product.price)}
-                  <span className={`adm-pill ${product.stock_status === 'in_stock' ? 'adm-pill-ok' : 'adm-pill-bad'}`}>
-                    {product.stock_status === 'in_stock' ? 'In stock' : 'Out of stock'}
-                  </span>
-                </p>
-              </div>
-            </button>
+            <div key={product.id} className="relative">
+              <button
+                type="button"
+                onClick={() => handleSelectProduct(product)}
+                className={`adm-card w-full overflow-hidden p-0 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
+                  selected.has(product.id) ? 'ring-2 ring-red-500' : ''
+                } ${product.hidden ? 'opacity-60' : ''}`}
+              >
+                <ProductThumb src={product.product_thumbnail?.original_url} alt={product.name} className="aspect-square w-full object-cover" />
+                <div className="p-3">
+                  <p className="mb-1 line-clamp-2 text-[13px] font-semibold text-zinc-900">{product.name}</p>
+                  <p className="flex flex-wrap items-center gap-2 text-xs text-zinc-600">
+                    {formatPrice(product.selling_price ?? product.price)}
+                    <span className={`adm-pill ${product.stock_status === 'in_stock' ? 'adm-pill-ok' : 'adm-pill-bad'}`}>
+                      {product.stock_status === 'in_stock' ? 'In stock' : 'Out of stock'}
+                    </span>
+                    {product.hidden ? <span className="adm-pill adm-pill-warn">Hidden</span> : null}
+                  </p>
+                </div>
+              </button>
+              <label className="absolute left-2 top-2 flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-white/90 shadow">
+                <input
+                  type="checkbox"
+                  checked={selected.has(product.id)}
+                  onChange={() => toggleSelected(product.id)}
+                  aria-label={`Select ${product.name}`}
+                  className="h-4 w-4 accent-red-600"
+                />
+              </label>
+            </div>
           ))}
         </div>
       )}

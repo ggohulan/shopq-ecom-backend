@@ -22,8 +22,23 @@ function serialize(row) {
     selling_price: row.selling_price,
     product_thumbnail: { original_url: row.thumbnail_url || null },
     stock_status: row.stock_status,
+    hidden: !!row.is_hidden,
   };
 }
+
+// The hidden_products table is created by a manual SQL step (see
+// scripts/hidden-products-schema.sql). Until that has run, treat every
+// product as visible instead of breaking the product list.
+async function hiddenTableExists(pool) {
+  try {
+    await pool.query('SELECT 1 FROM hidden_products LIMIT 1');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+const IS_HIDDEN = 'EXISTS (SELECT 1 FROM hidden_products h WHERE h.product_id = product_index.product_id)';
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -62,10 +77,14 @@ export async function GET(request) {
     if (searchParams.get('no_photo') === '1') {
       where.push('NOT EXISTS (SELECT 1 FROM product_images pi WHERE pi.product_id = product_index.product_id)');
     }
+    // ?hidden=1: only products hidden from the storefront.
+    const hiddenOk = await hiddenTableExists(pool);
+    if (hiddenOk && searchParams.get('hidden') === '1') where.push(IS_HIDDEN);
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
     const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM product_index ${whereSql}`, params);
-    const [rows] = await pool.query(`SELECT * FROM product_index ${whereSql} ORDER BY name ASC LIMIT ? OFFSET ?`, [
+    const select = hiddenOk ? `SELECT product_index.*, ${IS_HIDDEN} AS is_hidden` : 'SELECT *';
+    const [rows] = await pool.query(`${select} FROM product_index ${whereSql} ORDER BY name ASC LIMIT ? OFFSET ?`, [
       ...params,
       perPage,
       (page - 1) * perPage,
