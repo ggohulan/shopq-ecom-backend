@@ -7,16 +7,16 @@
 // Two signals are combined:
 //   1. file / folder names ("moneybox main.jpg", "moneybox2.jpg",
 //      "Money Box/IMG_0001.jpg"), scored against the product name;
-//   2. Gemini, which sees small previews of the photos plus the file names and
-//      a short list of candidate products, and may only answer with one of
-//      those products (or none).
-// If Gemini is not configured or fails, the name match alone is used and the
+//   2. Claude (Haiku), which sees small previews of the photos plus the file
+//      names and a short list of candidate products, and may only answer with
+//      one of those products (or none).
+// If Claude is not configured or fails, the name match alone is used and the
 // result says so. Nothing here writes to the database or the disk: the admin
 // reviews the result and saves it.
 //
 // A folder inside the chosen folder is ONE product (matchGroups): the product
 // is decided once for the whole folder and the main photo is the one named
-// main (or front/cover...), else the one Gemini picks, else the first.
+// main (or front/cover...), else the one Claude picks, else the first.
 
 export const MAIN_WORDS = ['main', 'primary', 'cover', 'front', 'thumbnail', 'thumb', 'first', 'hero'];
 export const GENERIC_WORDS = ['img', 'image', 'images', 'photo', 'photos', 'pic', 'pics', 'picture', 'dsc', 'dscn', 'dcim', 'screenshot', 'whatsapp', 'copy', 'untitled', 'new'];
@@ -232,55 +232,51 @@ function productList(candidates) {
     .join('\n');
 }
 
-// ------------------------------------------------------------------ Gemini
+// ------------------------------------------------------------------ Claude
 
-export function getGeminiConfig(env = process.env) {
-  return { key: env.GEMINI_API_KEY || '', model: env.GEMINI_VISION_MODEL || 'gemini-3.1-flash-lite' };
+export const DEFAULT_MODEL = 'claude-haiku-5-5';
+
+// Same ANTHROPIC_API_KEY the product-content drafting uses (see .env.local).
+export function getAiConfig(env = process.env) {
+  return { key: env.ANTHROPIC_API_KEY || '', model: env.PRODUCT_IMAGE_AI_MODEL || DEFAULT_MODEL };
 }
 
-/** Sends the request (two retries on a busy service) and returns the decoded JSON array. Throws Error('not_configured' | 'ai_failed'). */
-export async function callGemini(payload, { key, model, fetchImpl = globalThis.fetch } = {}) {
+/**
+ * Sends the request through the Anthropic SDK (which retries a busy service
+ * twice) and returns the decoded array of answers. `client` is for tests: any
+ * object with messages.create(). Throws Error('not_configured' | 'ai_failed').
+ */
+export async function callClaude(payload, { key, model, client } = {}) {
   if (!key || !model) throw new Error('not_configured');
 
-  let response = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      response = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(90000),
-      });
-    } catch (e) {
-      console.warn('[product-image-match] request failed', e && e.message);
-      response = null;
-      continue;
+  let message;
+  try {
+    let api = client;
+    if (!api) {
+      const { default: Anthropic } = await import('@anthropic-ai/sdk');
+      api = new Anthropic({ apiKey: key, timeout: 90000 });
     }
-    if (response.ok || ![429, 500, 502, 503, 504].includes(response.status)) break;
-    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-  }
-  if (!response || !response.ok) {
-    console.warn('[product-image-match] HTTP error', response && response.status, model);
+    message = await api.messages.create({ model, max_tokens: 16000, ...payload });
+  } catch (e) {
+    console.warn('[product-image-match] request failed', e && (e.status || e.message), model);
     throw new Error('ai_failed');
   }
 
-  let text = '';
-  try {
-    const json = await response.json();
-    text = String(json?.candidates?.[0]?.content?.parts?.[0]?.text || '');
-  } catch (e) {
+  if (message.stop_reason === 'refusal' || message.stop_reason === 'max_tokens') {
+    console.warn('[product-image-match] no usable answer, stop_reason:', message.stop_reason);
     throw new Error('ai_failed');
   }
-  text = text.trim().replace(/^```(?:json)?\s*|\s*```$/gi, '');
+
+  const block = (message.content || []).find((b) => b.type === 'text');
   let decoded;
   try {
-    decoded = JSON.parse(text);
+    decoded = JSON.parse(String(block?.text || '').trim());
   } catch (e) {
     console.warn('[product-image-match] reply was not valid JSON');
     throw new Error('ai_failed');
   }
-  if (!Array.isArray(decoded)) throw new Error('ai_failed');
-  return decoded;
+  if (!decoded || !Array.isArray(decoded.results)) throw new Error('ai_failed');
+  return decoded.results;
 }
 
 const PHOTO_INSTRUCTION = `You match product photos to products for an online shop's catalog.
@@ -314,17 +310,31 @@ Rules:
 - Never invent an id. If you are not sure, return null with a low confidence.
 - Return one entry for every group, using the same group key you were given.`;
 
-function payloadFor(instruction, parts, schemaItems, required) {
+const nullable = (type) => ({ anyOf: [{ type }, { type: 'null' }] });
+
+// Structured output: the reply is always JSON of the shape { results: [...] }
+function payloadFor(instruction, content, properties, required) {
   return {
-    systemInstruction: { parts: [{ text: instruction }] },
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: { type: 'ARRAY', items: { type: 'OBJECT', properties: schemaItems, required } },
+    system: instruction,
+    messages: [{ role: 'user', content }],
+    output_config: {
+      format: {
+        type: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: {
+            results: { type: 'array', items: { type: 'object', properties, required, additionalProperties: false } },
+          },
+          required: ['results'],
+          additionalProperties: false,
+        },
+      },
     },
   };
 }
+
+const textBlock = (text) => ({ type: 'text', text });
+const imageBlock = (data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } });
 
 function cleanReason(v) {
   return String(v || '').trim().slice(0, 200);
@@ -342,7 +352,7 @@ function clamp01(n) {
  * @param catalog [{ id, name, names?, code? }]
  * @returns { results: { [key]: { product_id, role, number, confidence, source, flagged, note } }, aiProblem: null | 'not_configured' | 'ai_failed' }
  */
-export async function matchFiles(files, catalog, { gemini } = {}) {
+export async function matchFiles(files, catalog, { ai: aiConfig } = {}) {
   const byId = {};
   catalog.forEach((p) => (byId[String(p.id)] = p));
 
@@ -359,7 +369,7 @@ export async function matchFiles(files, catalog, { gemini } = {}) {
   let aiProblem = null;
   if (catalog.length && files.length) {
     try {
-      ai = await askPhotos(files, info, catalog, gemini);
+      ai = await askPhotos(files, info, catalog, aiConfig);
       aiRan = true;
     } catch (e) {
       aiProblem = e.message === 'not_configured' ? 'not_configured' : 'ai_failed';
@@ -424,11 +434,11 @@ function decide({ aiId, nameId, nameStrong, nameScore, a, aiRan, ambiguous, what
   return { productId, source, confidence: Math.round(confidence * 100) / 100, flagged, note };
 }
 
-async function askPhotos(files, info, catalog, gemini) {
-  const cfg = gemini || {};
+async function askPhotos(files, info, catalog, aiConfig) {
+  const cfg = aiConfig || {};
   const candidates = candidatesFor(Object.values(info), catalog);
 
-  const parts = [{ text: `PRODUCTS (id | name | code):\n${productList(candidates)}\n\nPHOTOS:` }];
+  const content = [textBlock(`PRODUCTS (id | name | code):\n${productList(candidates)}\n\nPHOTOS:`)];
   for (const f of files) {
     const n = info[f.key];
     const hint = Object.keys(n.scores)
@@ -436,26 +446,28 @@ async function askPhotos(files, info, catalog, gemini) {
       .slice(0, 3)
       .filter((id) => candidates[id])
       .map((id) => `${id} (${n.scores[id].toFixed(2)})`);
-    parts.push({
-      text: `\nPhoto key=${f.key} file="${f.path}"${n.parsed.role ? ` file-name-role=${n.parsed.role}` : ''}${hint.length ? ` file-name-suggests=${hint.join(', ')}` : ''}`,
-    });
-    if (f.thumb) parts.push({ inlineData: { mimeType: 'image/jpeg', data: f.thumb } });
+    content.push(
+      textBlock(
+        `\nPhoto key=${f.key} file="${f.path}"${n.parsed.role ? ` file-name-role=${n.parsed.role}` : ''}${hint.length ? ` file-name-suggests=${hint.join(', ')}` : ''}`
+      )
+    );
+    if (f.thumb) content.push(imageBlock(f.thumb));
   }
 
   const payload = payloadFor(
     PHOTO_INSTRUCTION,
-    parts,
+    content,
     {
-      key: { type: 'STRING' },
-      product_id: { type: 'INTEGER', nullable: true },
-      role: { type: 'STRING' },
-      confidence: { type: 'NUMBER' },
-      reason: { type: 'STRING' },
+      key: { type: 'string' },
+      product_id: nullable('integer'),
+      role: { type: 'string' },
+      confidence: { type: 'number' },
+      reason: { type: 'string' },
     },
-    ['key', 'product_id', 'role', 'confidence']
+    ['key', 'product_id', 'role', 'confidence', 'reason']
   );
 
-  const decoded = await callGemini(payload, cfg);
+  const decoded = await callClaude(payload, cfg);
   const out = {};
   for (const row of decoded) {
     if (!row || typeof row !== 'object' || row.key === undefined) continue;
@@ -476,7 +488,7 @@ async function askPhotos(files, info, catalog, gemini) {
  * @param groups  [{ key, folder: 'Root/Money Box', files: [{ key, path, thumb }] }]
  * @returns same shape as matchFiles, plus `group` on each result
  */
-export async function matchGroups(groups, catalog, { gemini } = {}) {
+export async function matchGroups(groups, catalog, { ai: aiConfig } = {}) {
   const byId = {};
   catalog.forEach((p) => (byId[String(p.id)] = p));
 
@@ -507,7 +519,7 @@ export async function matchGroups(groups, catalog, { gemini } = {}) {
   let aiProblem = null;
   if (catalog.length && groups.length) {
     try {
-      ai = await askGroups(groups, info, catalog, gemini);
+      ai = await askGroups(groups, info, catalog, aiConfig);
       aiRan = true;
     } catch (e) {
       aiProblem = e.message === 'not_configured' ? 'not_configured' : 'ai_failed';
@@ -552,11 +564,11 @@ export async function matchGroups(groups, catalog, { gemini } = {}) {
   return { results, aiProblem };
 }
 
-async function askGroups(groups, info, catalog, gemini) {
-  const cfg = gemini || {};
+async function askGroups(groups, info, catalog, aiConfig) {
+  const cfg = aiConfig || {};
   const candidates = candidatesFor(Object.values(info), catalog);
 
-  const parts = [{ text: `PRODUCTS (id | name | code):\n${productList(candidates)}\n\nGROUPS (each group is one folder = one product):` }];
+  const content = [textBlock(`PRODUCTS (id | name | code):\n${productList(candidates)}\n\nGROUPS (each group is one folder = one product):`)];
   for (const g of groups) {
     const n = info[g.key];
     const hint = Object.keys(n.scores)
@@ -564,28 +576,28 @@ async function askGroups(groups, info, catalog, gemini) {
       .slice(0, 3)
       .filter((id) => candidates[id])
       .map((id) => `${id} (${n.scores[id].toFixed(2)})`);
-    parts.push({ text: `\n\nGroup key=${g.key} folder="${g.folder}"${hint.length ? ` folder-name-suggests=${hint.join(', ')}` : ''}` });
+    content.push(textBlock(`\n\nGroup key=${g.key} folder="${g.folder}"${hint.length ? ` folder-name-suggests=${hint.join(', ')}` : ''}`));
     for (const f of g.files) {
       const role = n.files[f.key] && n.files[f.key].role;
-      parts.push({ text: `\nPhoto key=${f.key} file="${basename(f.path)}"${role === 'main' ? ' file-name-says-main' : ''}` });
-      if (f.thumb) parts.push({ inlineData: { mimeType: 'image/jpeg', data: f.thumb } });
+      content.push(textBlock(`\nPhoto key=${f.key} file="${basename(f.path)}"${role === 'main' ? ' file-name-says-main' : ''}`));
+      if (f.thumb) content.push(imageBlock(f.thumb));
     }
   }
 
   const payload = payloadFor(
     GROUP_INSTRUCTION,
-    parts,
+    content,
     {
-      group_key: { type: 'STRING' },
-      product_id: { type: 'INTEGER', nullable: true },
-      main_photo_key: { type: 'STRING', nullable: true },
-      confidence: { type: 'NUMBER' },
-      reason: { type: 'STRING' },
+      group_key: { type: 'string' },
+      product_id: nullable('integer'),
+      main_photo_key: nullable('string'),
+      confidence: { type: 'number' },
+      reason: { type: 'string' },
     },
-    ['group_key', 'product_id', 'confidence']
+    ['group_key', 'product_id', 'main_photo_key', 'confidence', 'reason']
   );
 
-  const decoded = await callGemini(payload, cfg);
+  const decoded = await callClaude(payload, cfg);
   const out = {};
   for (const row of decoded) {
     if (!row || typeof row !== 'object' || row.group_key === undefined) continue;

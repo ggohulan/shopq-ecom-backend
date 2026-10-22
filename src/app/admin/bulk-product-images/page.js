@@ -5,7 +5,7 @@ import AdminShell from '@/components/admin/AdminShell';
 import { clearSessionToken } from '@/lib/adminSession';
 
 // Bulk product image upload. The admin picks a folder that holds one
-// sub-folder per product; the AI (Gemini) + the folder/file names decide
+// sub-folder per product; the AI (Claude) + the folder/file names decide
 // which product each sub-folder is and which photo is the main one; the admin
 // reviews every match and saves product by product (or all at once).
 //
@@ -496,7 +496,7 @@ function BulkImages({ token }) {
         type: 'warn',
         text:
           aiProblem === 'not_configured'
-            ? 'The AI is not set up (no Gemini API key on this server), so photos were matched by name only. Please check every match.'
+            ? 'The AI is not set up (no Anthropic API key on this server), so photos were matched by name only. Please check every match.'
             : 'The AI did not answer, so some or all photos were matched by name only. Please check every match.',
       });
     }

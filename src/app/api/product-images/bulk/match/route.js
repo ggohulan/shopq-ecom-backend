@@ -2,7 +2,7 @@
 //
 // Bulk product image upload, step 1: match photos to products. The admin page
 // sends small previews (not the full photos) plus file/folder names; the
-// AI (Gemini) and the names decide which product each photo belongs to and
+// AI (Claude) and the names decide which product each photo belongs to and
 // which one is the main photo. Nothing is saved here - the admin reviews the
 // result and then saves through POST /api/product-images/bulk/save.
 //
@@ -11,7 +11,7 @@
 import { NextResponse } from 'next/server';
 import { checkAdminToken } from '@/lib/adminAuth';
 import { loadCatalog, productDetails } from '@/lib/productImageBulk';
-import { getGeminiConfig, matchFiles, matchGroups } from '@/lib/productImageMatcher.mjs';
+import { getAiConfig, matchFiles, matchGroups } from '@/lib/productImageMatcher.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,17 +71,17 @@ export async function POST(request) {
 
   try {
     const catalog = await loadCatalog();
-    const gemini = getGeminiConfig();
+    const ai = getAiConfig();
 
     let results = {};
     let aiProblem = null;
     if (groups.length) {
-      const r = await matchGroups(groups, catalog, { gemini });
+      const r = await matchGroups(groups, catalog, { ai });
       results = { ...results, ...r.results };
       aiProblem = r.aiProblem;
     }
     if (files.length) {
-      const r = await matchFiles(files, catalog, { gemini });
+      const r = await matchFiles(files, catalog, { ai });
       results = { ...results, ...r.results };
       aiProblem = aiProblem || r.aiProblem;
     }

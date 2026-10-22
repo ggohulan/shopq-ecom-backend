@@ -116,20 +116,15 @@ sibling directory, survives that. There's no size limit enforced beyond the
 accumulate on this 1GB-RAM VPS (RAM and disk are separate, but confirm the
 plan's disk allowance if this grows into thousands of images).
 
-**Bulk product images (/admin/bulk-product-images)** uses Gemini to match
-photos to products. Add these two lines to `.env.local` (same API key the
-CRM uses is fine) and restart PM2 with `--update-env`:
-
-```
-GEMINI_API_KEY=<key>
-GEMINI_VISION_MODEL=gemini-3.1-flash-lite
-```
+**Bulk product images (/admin/bulk-product-images)** uses Claude Haiku 5.5 to
+match photos to products. It uses the same `ANTHROPIC_API_KEY` as the
+"Generate with AI" product copy, so make sure that line in `.env.local` has a
+key, then restart PM2 with `--update-env`. The model is `claude-haiku-5-5`; to
+use another one, add `PRODUCT_IMAGE_AI_MODEL=<model id>`.
 
 Without the key the page still works: it matches by folder and file names
 only and tells the admin so. Only small previews and file names are sent to
-Gemini. If the server cannot reach Google over IPv6, start Node with
-`NODE_OPTIONS=--dns-result-order=ipv4first` (seen on a Windows dev machine;
-a Linux VPS normally does not need it). Run the matcher tests with `npm test`.
+Anthropic. Run the matcher tests with `npm test`.
 
 ## 5. Build locally, not on the server
 
